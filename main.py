@@ -11,6 +11,7 @@ import re
 import secrets
 import string
 from datetime import datetime, timedelta
+from urllib.parse import quote_plus
 from dotenv import load_dotenv
 from pymongo import MongoClient, ASCENDING, DESCENDING
 from bson.objectid import ObjectId
@@ -39,9 +40,39 @@ if not all([BOT_TOKEN, MONGO_URI, ADMIN_ID]):
     logger.error("BOT_TOKEN, MONGO_URI, ADMIN_ID required")
     exit(1)
 
+def fix_mongo_uri(uri: str) -> str:
+    """Auto-encode username/password if they contain special characters"""
+    try:
+        if "://" not in uri:
+            return uri
+        scheme, rest = uri.split("://", 1)
+        if "@" not in rest:
+            return uri
+        creds, hostpart = rest.rsplit("@", 1)
+        if ":" in creds:
+            user, passwd = creds.split(":", 1)
+            # Only encode if not already encoded and has special chars
+            if "%" not in passwd and any(c in passwd for c in "@#$%/:?"):
+                user = quote_plus(user)
+                passwd = quote_plus(passwd)
+                return f"{scheme}://{user}:{passwd}@{hostpart}"
+        return uri
+    except Exception as e:
+        logger.warning(f"URI fix skipped: {e}")
+        return uri
+
+MONGO_URI = fix_mongo_uri(MONGO_URI)
+
 # -------------------- DB --------------------
-client = MongoClient(MONGO_URI)
-db = client.get_database()
+try:
+    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=10000)
+    client.admin.command("ping")
+    db = client.get_database()
+    logger.info("MongoDB connected successfully!")
+except Exception as e:
+    logger.error(f"MongoDB connection failed: {e}")
+    logger.error("Check MONGO_URI. Password with special chars must be URL-encoded (use quote_plus).")
+    exit(1)
 config_col = db["config"]
 users_col = db["users"]
 tokens_col = db["verification_tokens"]
@@ -61,7 +92,7 @@ subjects_col.create_index([("batch_id", ASCENDING)])
 chapters_col.create_index([("subject_id", ASCENDING)])
 contents_col.create_index([("chapter_id", ASCENDING)])
 
-logger.info("MongoDB connected")
+# indexes created
 
 # -------------------- FONT --------------------
 FONT_MAPS = {
